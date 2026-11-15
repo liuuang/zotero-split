@@ -34,6 +34,7 @@ export function installDock(win: any): () => void {
   let mutating = false;
   let dragID: string | null = null;
   let lastSelectedID = tabs.selectedID;
+  let splitterDrag: { node: Branch; pointerId: number; start: number; latest: number; initial: number; total: number; lower: number; horizontal: boolean; frame: number | null; timer: number | null } | null = null;
   const leafRects = new Map<string, { x: number; y: number; w: number; h: number }>();
   const savedStyles = new Map<Element, string | null>();
   const original = {
@@ -48,6 +49,9 @@ export function installDock(win: any): () => void {
   overlay.dataset.minimalDockRoot = "true";
   overlay.style.cssText = "position:absolute;z-index:30;pointer-events:none;overflow:hidden;";
   stack.appendChild(overlay);
+  const splitterShield = doc.createElementNS(XHTML, "div") as HTMLElement;
+  splitterShield.style.cssText = "position:absolute;z-index:31;display:none;pointer-events:auto;cursor:col-resize;touch-action:none;";
+  stack.appendChild(splitterShield);
   const css = doc.createElementNS(XHTML, "style") as HTMLStyleElement;
   css.textContent = `
     #tabs-deck.minimal-dock-active { display: block !important; position: relative !important; min-width: 0 !important; overflow: hidden !important; }
@@ -186,6 +190,51 @@ export function installDock(win: any): () => void {
       } catch (_) { /* A closing reader can have a dead browser. */ }
     }
   }
+  function positionSplitterShield(): void {
+    const deckRect = deck.getBoundingClientRect();
+    const stackRect = stack.getBoundingClientRect();
+    splitterShield.style.left = `${deckRect.left - stackRect.left}px`;
+    splitterShield.style.top = `${deckRect.top - stackRect.top}px`;
+    splitterShield.style.width = `${deckRect.width}px`;
+    splitterShield.style.height = `${deckRect.height}px`;
+  }
+  function applySplitterDrag(): void {
+    const drag = splitterDrag;
+    if (!drag) return;
+    if (drag.frame !== null) win.cancelAnimationFrame(drag.frame);
+    if (drag.timer !== null) win.clearTimeout(drag.timer);
+    drag.frame = null;
+    drag.timer = null;
+    drag.node.ratio = Math.max(drag.lower, Math.min(1 - drag.lower, drag.initial + (drag.latest - drag.start) / drag.total));
+    render();
+  }
+  function onSplitterMove(event: PointerEvent): void {
+    const drag = splitterDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    drag.latest = drag.horizontal ? event.clientX : event.clientY;
+    if (drag.frame === null && drag.timer === null) {
+      drag.frame = win.requestAnimationFrame(applySplitterDrag);
+      // Zotero's background test windows can suspend rAF. The timer also
+      // keeps a real drag responsive when the window briefly loses visibility.
+      drag.timer = win.setTimeout(applySplitterDrag, 16);
+    }
+  }
+  function endSplitterDrag(event?: PointerEvent): void {
+    const drag = splitterDrag;
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    if (event && event.type === "pointerup") {
+      drag.latest = drag.horizontal ? event.clientX : event.clientY;
+      applySplitterDrag();
+    } else {
+      if (drag.frame !== null) win.cancelAnimationFrame(drag.frame);
+      if (drag.timer !== null) win.clearTimeout(drag.timer);
+    }
+    splitterDrag = null;
+    try { splitterShield.releasePointerCapture(drag.pointerId); } catch (_) { /* Capture may already be released. */ }
+    splitterShield.style.display = "none";
+  }
+  function onSplitterBlur(): void { endSplitterDrag(); }
   function collapseNativeHeader(): number {
     if (!titleBar || !nativeTabBar || !nativeToolbar) return 0;
     preserveStyle(titleBar);
@@ -232,6 +281,7 @@ export function installDock(win: any): () => void {
     overlay.style.top = `${deckRect.top - stackRect.top}px`;
     overlay.style.width = `${deckRect.width}px`;
     overlay.style.height = `${deckRect.height}px`;
+    if (splitterDrag) positionSplitterShield();
     overlay.replaceChildren();
     leafRects.clear();
     const shown = new Set<string>();
@@ -256,19 +306,13 @@ export function installDock(win: any): () => void {
           : `left:${x}px;top:${y + firstSize - HANDLE / 2}px;width:${w}px;height:${HANDLE}px;cursor:row-resize;`;
         handle.addEventListener("pointerdown", (event: PointerEvent) => {
           event.preventDefault();
-          handle.setPointerCapture(event.pointerId);
+          if (splitterDrag) endSplitterDrag();
           const start = horizontal ? event.clientX : event.clientY;
-          const initial = node.ratio;
-          const onMove = (moveEvent: PointerEvent) => {
-            node.ratio = Math.max(lower, Math.min(1 - lower, initial + ((horizontal ? moveEvent.clientX : moveEvent.clientY) - start) / total));
-            render();
-          };
-          const onUp = () => {
-            win.removeEventListener("pointermove", onMove, true);
-            win.removeEventListener("pointerup", onUp, true);
-          };
-          win.addEventListener("pointermove", onMove, true);
-          win.addEventListener("pointerup", onUp, true);
+          splitterDrag = { node, pointerId: event.pointerId, start, latest: start, initial: node.ratio, total, lower, horizontal, frame: null, timer: null };
+          positionSplitterShield();
+          splitterShield.style.cursor = horizontal ? "col-resize" : "row-resize";
+          splitterShield.style.display = "block";
+          try { splitterShield.setPointerCapture(event.pointerId); } catch (_) { /* Window listeners still finish the drag. */ }
         });
         overlay.appendChild(handle);
         return;
@@ -353,6 +397,7 @@ export function installDock(win: any): () => void {
     wakeReaders();
   }
   function resetVisuals(): void {
+    endSplitterDrag();
     deck.classList.remove("minimal-dock-active");
     nativeTabList?.removeAttribute("data-minimal-dock-hidden");
     restoreStyles();
@@ -543,6 +588,10 @@ export function installDock(win: any): () => void {
   observer.observe(deck, { childList: true });
   const resize = new win.ResizeObserver(() => render());
   resize.observe(deck);
+  win.addEventListener("pointermove", onSplitterMove, true);
+  win.addEventListener("pointerup", endSplitterDrag, true);
+  win.addEventListener("pointercancel", endSplitterDrag, true);
+  win.addEventListener("blur", onSplitterBlur, true);
   const notifierID = win.Zotero.Notifier.registerObserver({
     notify(event: string, type: string) {
       if (type === "tab" && (event === "select" || event === "add" || event === "close")) {
@@ -570,6 +619,11 @@ export function installDock(win: any): () => void {
     disposed = true;
     observer.disconnect();
     resize.disconnect();
+    endSplitterDrag();
+    win.removeEventListener("pointermove", onSplitterMove, true);
+    win.removeEventListener("pointerup", endSplitterDrag, true);
+    win.removeEventListener("pointercancel", endSplitterDrag, true);
+    win.removeEventListener("blur", onSplitterBlur, true);
     win.Zotero.Notifier.unregisterObserver(notifierID);
     doc.removeEventListener("dragstart", onNativeDragStart, true);
     doc.removeEventListener("dragend", onNativeDragEnd, true);
@@ -585,6 +639,7 @@ export function installDock(win: any): () => void {
     tabs.close = original.close;
     tabs.canUnload = original.canUnload;
     overlay.remove();
+    splitterShield.remove();
     css.remove();
     if (win.Zotero?.MinimalDock?.data) {
       if (previousDock === undefined) delete win.Zotero.MinimalDock.data.dock;

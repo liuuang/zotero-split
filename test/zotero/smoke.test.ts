@@ -140,6 +140,67 @@ describe("Zotero Split smoke", function () {
     addon.hooks.onMainWindowLoad(window);
   });
 
+  it("tracks nested divider drags without jumps or leaked listeners", async function () {
+    const dock = addon.data.dock;
+    dock.split(ids[0], "right", "zotero-pane");
+    dock.split(ids[1], "bottom", ids[0]);
+    const state = () => dock.getState().layout;
+    const event = (type: string, x: number, y: number) => new window.PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 17, pointerType: "mouse", isPrimary: true,
+      clientX: x, clientY: y,
+    });
+    const drag = async (axis: "horizontal" | "vertical", offsets: number[], end: string) => {
+      const handles = Array.from(window.document.querySelectorAll("#minimal-dock-overlay .md-handle")) as HTMLElement[];
+      const handle = handles.find((h) => {
+        const r = h.getBoundingClientRect();
+        return axis === "horizontal" ? r.height > r.width : r.width > r.height;
+      });
+      assert.isNotNull(handle);
+      const rect = handle.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const ratio = () => axis === "horizontal" ? state().ratio : state().second.ratio;
+      const values = [ratio()];
+      handle.dispatchEvent(event("pointerdown", x, y));
+      const shield = window.document.getElementById("minimal-dock-overlay")?.nextElementSibling as HTMLElement;
+      assert.isNotNull(shield);
+      assert.notEqual(window.getComputedStyle(shield).display, "none");
+      for (const offset of offsets) {
+        shield.dispatchEvent(event("pointermove", x + (axis === "horizontal" ? offset : 0), y + (axis === "vertical" ? offset : 0)));
+        await Zotero.Promise.delay(30);
+        values.push(ratio());
+      }
+      (end === "blur" ? window : shield).dispatchEvent(end === "blur" ? new window.Event("blur") : event(end, x + (axis === "horizontal" ? offsets.at(-1)! : 0), y + (axis === "vertical" ? offsets.at(-1)! : 0)));
+      assert.equal(window.getComputedStyle(shield).display, "none");
+      return { values, x, y, ratio };
+    };
+    try {
+      const horizontal = await drag("horizontal", [30, 60, 90, 90, 30], "pointerup");
+      assert.isAbove(horizontal.values[1], horizontal.values[0]);
+      assert.isAbove(horizontal.values[2], horizontal.values[1]);
+      assert.isAbove(horizontal.values[3], horizontal.values[2]);
+      assert.closeTo(horizontal.values[4], horizontal.values[3], 0.001, "same coordinate stays fixed");
+      assert.isBelow(horizontal.values[5], horizontal.values[4]);
+      const stopped = horizontal.ratio();
+      window.dispatchEvent(event("pointermove", horizontal.x + 150, horizontal.y));
+      assert.closeTo(horizontal.ratio(), stopped, 0.001, "pointerup stops drag");
+      const repeated = await drag("horizontal", [25], "pointercancel");
+      assert.isAbove(repeated.values[1], repeated.values[0]);
+      const cancelled = repeated.ratio();
+      window.dispatchEvent(event("pointermove", repeated.x + 150, repeated.y));
+      assert.closeTo(repeated.ratio(), cancelled, 0.001, "pointercancel stops drag");
+      const vertical = await drag("vertical", [25, 50, 50], "blur");
+      assert.isAbove(vertical.values[1], vertical.values[0]);
+      assert.isAbove(vertical.values[2], vertical.values[1]);
+      assert.closeTo(vertical.values[3], vertical.values[2], 0.001);
+      const blurred = vertical.ratio();
+      window.dispatchEvent(event("pointermove", vertical.x, vertical.y + 120));
+      assert.closeTo(vertical.ratio(), blurred, 0.001, "blur stops drag");
+    } finally {
+      dock.reset();
+    }
+  });
+
   it("merges nested panes through bar drops and restores the native bar", async function () {
     const nativeList = window.document.querySelector("#tab-bar-container .tab-bar-inner-container");
     const before = tabs._tabs.map((tab: any) => tab.id).sort();
@@ -312,6 +373,23 @@ describe("Zotero Split smoke", function () {
       const browsers = readers.map((reader) => reader._iframe);
       addon.data.dock.split(readers[0].tabID, "left", readers[1].tabID);
       await Zotero.Promise.delay(300);
+      const handle = window.document.querySelector("#minimal-dock-overlay .md-handle");
+      assert.isNotNull(handle);
+      const hr = handle.getBoundingClientRect();
+      const hx = hr.left + hr.width / 2;
+      const hy = hr.top + hr.height / 2;
+      const ratioBefore = addon.data.dock.getState().layout.ratio;
+      const pointer = (type: string, x: number) => new window.PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: 29, pointerType: "mouse", isPrimary: true,
+        clientX: x, clientY: hy,
+      });
+      handle.dispatchEvent(pointer("pointerdown", hx));
+      const shield = window.document.getElementById("minimal-dock-overlay")?.nextElementSibling;
+      assert.isNotNull(shield);
+      shield.dispatchEvent(pointer("pointermove", hx + 55));
+      await Zotero.Promise.delay(30);
+      assert.isAbove(addon.data.dock.getState().layout.ratio, ratioBefore, "divider follows pointer across PDF");
+      shield.dispatchEvent(pointer("pointerup", hx + 55));
       for (const [i, reader] of readers.entries()) {
         const rect = window.document.getElementById(reader.tabID)?.getBoundingClientRect();
         assert.isAbove(rect?.width ?? 0, 0);
