@@ -1,0 +1,42 @@
+{
+  "name": "zotero-split",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "description": "Split native Zotero tabs into resizable panes",
+  "author": "Zotero Split contributors",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/liuuang/zotero-split#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liuuang/zotero-split.git"
+  },
+  "config": {
+    "addonName": "Zotero Split",
+    "addonID": "minimal-dock@plugin.local",
+    "addonRef": "minimal-dock",
+    "addonInstance": "MinimalDock",
+    "prefsPrefix": "extensions.zotero.minimalDock"
+  },
+  "scripts": {
+    "start": "zotero-plugin serve",
+    "build": "zotero-plugin build && npm run typecheck",
+    "typecheck": "tsc --noEmit",
+    "test:zotero": "node scripts/run-zotero-test.mjs"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.10.0",
+    "chai": "^6.2.1",
+    "esbuild": "^0.28.2",
+    "mocha": "^11.8.0",
+    "typescript": "^5.9.3",
+    "zotero-plugin-scaffold": "^0.9.3",
+    "zotero-types": "^4.1.3"
+  },
+  "overrides": {
+    "epubjs": "^0.3.93",
+    "pdfjs-dist": "^5.4.0"
+  }
+}

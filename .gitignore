@@ -1,0 +1,9 @@
+node_modules/
+.scaffold/
+.env
+*.xpi
+*.log
+*.tsbuildinfo
+/zotero-dev/
+/test/zotero/rg-path.generated.ts
+/typings/i10n.d.ts

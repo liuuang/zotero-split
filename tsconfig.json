@@ -1,0 +1,10 @@
+{
+  "extends": "zotero-types/entries/sandbox/",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src", "typings"],
+  "exclude": ["addon", ".scaffold", "node_modules", "typings/i10n.d.ts"]
+}

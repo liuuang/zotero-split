@@ -1,0 +1,43 @@
+/* global Components, Services, Zotero, APP_SHUTDOWN */
+
+var chromeHandle;
+
+function install(data, reason) {}
+
+async function startup({ rootURI }, reason) {
+  const aomStartup = Components.classes[
+    "@mozilla.org/addons/addon-manager-startup;1"
+  ].getService(Components.interfaces.amIAddonManagerStartup);
+  const manifestURI = Services.io.newURI(rootURI + "manifest.json");
+  chromeHandle = aomStartup.registerChrome(manifestURI, [
+    ["content", "__addonRef__", rootURI + "content/"],
+  ]);
+
+  const ctx = { rootURI, Zotero };
+  ctx._globalThis = ctx;
+  Services.scriptloader.loadSubScript(
+    `${rootURI}content/scripts/__addonRef__.js`,
+    ctx,
+  );
+  await Zotero.__addonInstance__.hooks.onStartup();
+}
+
+async function onMainWindowLoad({ window }, reason) {
+  await Zotero.__addonInstance__?.hooks.onMainWindowLoad(window);
+}
+
+async function onMainWindowUnload({ window }, reason) {
+  await Zotero.__addonInstance__?.hooks.onMainWindowUnload(window);
+}
+
+async function shutdown(data, reason) {
+  if (reason === APP_SHUTDOWN) {
+    await Zotero.__addonInstance__?.hooks.onShutdown();
+    return;
+  }
+  await Zotero.__addonInstance__?.hooks.onShutdown();
+  chromeHandle?.destruct();
+  chromeHandle = null;
+}
+
+function uninstall(data, reason) {}
