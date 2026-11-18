@@ -147,7 +147,7 @@ describe("Zotero Split smoke", function () {
     const state = () => dock.getState().layout;
     const event = (type: string, x: number, y: number) => new window.PointerEvent(type, {
       bubbles: true, cancelable: true, pointerId: 17, pointerType: "mouse", isPrimary: true,
-      clientX: x, clientY: y,
+      clientX: x, clientY: y, buttons: type === "pointerdown" || type === "pointermove" ? 1 : 0,
     });
     const drag = async (axis: "horizontal" | "vertical", offsets: number[], end: string) => {
       const handles = Array.from(window.document.querySelectorAll("#minimal-dock-overlay .md-handle")) as HTMLElement[];
@@ -161,21 +161,32 @@ describe("Zotero Split smoke", function () {
       const y = rect.top + rect.height / 2;
       const ratio = () => axis === "horizontal" ? state().ratio : state().second.ratio;
       const values = [ratio()];
+      const tab = window.document.querySelector("#minimal-dock-overlay .md-tab");
       handle.dispatchEvent(event("pointerdown", x, y));
       const shield = window.document.getElementById("minimal-dock-overlay")?.nextElementSibling as HTMLElement;
       assert.isNotNull(shield);
       assert.notEqual(window.getComputedStyle(shield).display, "none");
+      const deckRect = window.document.getElementById("tabs-deck").getBoundingClientRect();
+      const size = axis === "horizontal" ? deckRect.width : deckRect.height;
+      const min = Math.min(0.5, (axis === "horizontal" ? 240 : 180) / size);
+      const start = (axis === "horizontal" ? x - deckRect.left : y - deckRect.top) / size;
       for (const offset of offsets) {
         shield.dispatchEvent(event("pointermove", x + (axis === "horizontal" ? offset : 0), y + (axis === "vertical" ? offset : 0)));
+        const expected = Math.max(min, Math.min(1 - min, start + offset / size));
         await Zotero.Promise.delay(30);
+        for (let i = 0; Math.abs(ratio() - expected) >= 0.002 && i < 10; i++) {
+          await Zotero.Promise.delay(20);
+        }
+        assert.closeTo(ratio(), expected, 0.002, `${axis} divider at offset ${offset}`);
         values.push(ratio());
+        assert.strictEqual(window.document.querySelector("#minimal-dock-overlay .md-tab"), tab, "resizing keeps the tab control mounted");
       }
-      (end === "blur" ? window : shield).dispatchEvent(end === "blur" ? new window.Event("blur") : event(end, x + (axis === "horizontal" ? offsets.at(-1)! : 0), y + (axis === "vertical" ? offsets.at(-1)! : 0)));
+      shield.dispatchEvent(event(end, x + (axis === "horizontal" ? offsets.at(-1)! : 0), y + (axis === "vertical" ? offsets.at(-1)! : 0)));
       assert.equal(window.getComputedStyle(shield).display, "none");
       return { values, x, y, ratio };
     };
     try {
-      const horizontal = await drag("horizontal", [30, 60, 90, 90, 30], "pointerup");
+      const horizontal = await drag("horizontal", [5, 10, 15, 15, 5], "pointerup");
       assert.isAbove(horizontal.values[1], horizontal.values[0]);
       assert.isAbove(horizontal.values[2], horizontal.values[1]);
       assert.isAbove(horizontal.values[3], horizontal.values[2]);
@@ -184,18 +195,80 @@ describe("Zotero Split smoke", function () {
       const stopped = horizontal.ratio();
       window.dispatchEvent(event("pointermove", horizontal.x + 150, horizontal.y));
       assert.closeTo(horizontal.ratio(), stopped, 0.001, "pointerup stops drag");
-      const repeated = await drag("horizontal", [25], "pointercancel");
+      const repeated = await drag("horizontal", [5], "pointercancel");
       assert.isAbove(repeated.values[1], repeated.values[0]);
       const cancelled = repeated.ratio();
       window.dispatchEvent(event("pointermove", repeated.x + 150, repeated.y));
       assert.closeTo(repeated.ratio(), cancelled, 0.001, "pointercancel stops drag");
-      const vertical = await drag("vertical", [25, 50, 50], "blur");
+      const vertical = await drag("vertical", [5, 10, 10], "lostpointercapture");
       assert.isAbove(vertical.values[1], vertical.values[0]);
       assert.isAbove(vertical.values[2], vertical.values[1]);
       assert.closeTo(vertical.values[3], vertical.values[2], 0.001);
-      const blurred = vertical.ratio();
+      const released = vertical.ratio();
       window.dispatchEvent(event("pointermove", vertical.x, vertical.y + 120));
-      assert.closeTo(vertical.ratio(), blurred, 0.001, "blur stops drag");
+      assert.closeTo(vertical.ratio(), released, 0.001, "losing pointer capture stops drag");
+    } finally {
+      dock.reset();
+    }
+  });
+
+  it("keeps pane order on self drops and ignores an edge of the only tab", async function () {
+    const dock = addon.data.dock;
+    const leafOf = (node: any, tabID: string): any => !node ? null :
+      node.kind === "leaf" ? (node.tabs.includes(tabID) ? node : null) :
+        leafOf(node.first, tabID) || leafOf(node.second, tabID);
+    const dropTab = async (tabID: string, x: number, y: number, checkPreview?: (preview: HTMLElement) => void) => {
+      const source = window.document.querySelector(
+        `#minimal-dock-overlay .md-tab[data-tab-id="${tabID}"]`,
+      );
+      assert.isNotNull(source);
+      const transfer = new window.DataTransfer();
+      source.dispatchEvent(new window.DragEvent("dragstart", {
+        bubbles: true, cancelable: true, dataTransfer: transfer,
+      }));
+      await Zotero.Promise.delay(30);
+      const surface = window.document.querySelector("#minimal-dock-overlay .md-drag-surface");
+      assert.isNotNull(surface);
+      const options = { bubbles: true, cancelable: true, dataTransfer: transfer, clientX: x, clientY: y };
+      surface.dispatchEvent(new window.DragEvent("dragover", options));
+      const preview = surface.querySelector(".md-drop") as HTMLElement;
+      checkPreview?.(preview);
+      surface.dispatchEvent(new window.DragEvent("drop", options));
+      source.dispatchEvent(new window.DragEvent("dragend", { bubbles: true, dataTransfer: transfer }));
+      await Zotero.Promise.delay(50);
+    };
+    try {
+      dock.split(ids[0], "right", "zotero-pane");
+      dock.move(ids[1], ids[0]);
+      const order = [...leafOf(dock.getState().layout, ids[0]).tabs];
+      assert.deepEqual(order, ids);
+      const selfTab = window.document.querySelector(
+        `#minimal-dock-overlay .md-tab[data-tab-id="${ids[0]}"]`,
+      ) as HTMLElement;
+      const tabRect = selfTab.getBoundingClientRect();
+      await dropTab(ids[0], tabRect.left + Math.min(8, tabRect.width / 4), tabRect.top + tabRect.height / 2);
+      assert.deepEqual(leafOf(dock.getState().layout, ids[0]).tabs, order, "dropping on own label keeps order");
+
+      const content = window.document.getElementById(ids[0])!.getBoundingClientRect();
+      await dropTab(ids[0], content.left + content.width / 2, content.top + content.height / 2);
+      assert.deepEqual(leafOf(dock.getState().layout, ids[0]).tabs, order, "dropping in own content keeps order");
+
+      dock.move(ids[1], "zotero-pane");
+      const before = dock.getState().layout;
+      const single = window.document.getElementById(ids[0])!.getBoundingClientRect();
+      await dropTab(ids[0], single.right - 5, single.top + single.height / 2, preview => {
+        assert.equal(window.getComputedStyle(preview).display, "none", "own single-tab edge has no preview");
+      });
+      assert.deepEqual(dock.getState().layout, before, "own single-tab edge does not change layout");
+      const library = window.document.getElementById("zotero-pane")!.getBoundingClientRect();
+      let predicted: DOMRect;
+      await dropTab(ids[0], library.left + 5, library.top + library.height / 2, preview => {
+        assert.equal(preview.dataset.mode, "split");
+        predicted = preview.getBoundingClientRect();
+      });
+      const moved = window.document.getElementById(ids[0])!.getBoundingClientRect();
+      assert.closeTo(moved.left, predicted!.left, 2);
+      assert.closeTo(moved.right, predicted!.right, 2, "preview accounts for the old pane collapsing");
     } finally {
       dock.reset();
     }
@@ -257,6 +330,8 @@ describe("Zotero Split smoke", function () {
     assert.notEqual(window.getComputedStyle(nativeList).display, "none");
     assert.equal(tabs.selectedID, ids[0]);
     assert.deepEqual(tabs._tabs.map((tab: any) => tab.id).sort(), before);
+    assert.deepEqual(tabs._tabs.filter((tab: any) => ids.includes(tab.id)).map((tab: any) => tab.id), ids,
+      "native strip keeps the order from the merged pane");
   });
 
   it("previews full-deck edge splits after merge and resize", async function () {
@@ -381,6 +456,7 @@ describe("Zotero Split smoke", function () {
       const ratioBefore = addon.data.dock.getState().layout.ratio;
       const pointer = (type: string, x: number) => new window.PointerEvent(type, {
         bubbles: true, cancelable: true, pointerId: 29, pointerType: "mouse", isPrimary: true,
+        buttons: type === "pointerdown" || type === "pointermove" ? 1 : 0,
         clientX: x, clientY: hy,
       });
       handle.dispatchEvent(pointer("pointerdown", hx));
